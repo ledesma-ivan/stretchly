@@ -30,6 +30,9 @@ import { registerBreakShortcuts } from './utils/breakShortcuts.js'
 import defaultSettings from './utils/defaultSettings.js'
 import StatusMessages from './utils/statusMessages.js'
 import DisplayManager from './utils/displayManager.js'
+import BreakStats from './utils/breakStats.js'
+import AwayTracker from './utils/awayTracker.js'
+import ScheduledBreaks from './utils/scheduledBreaks.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -72,6 +75,15 @@ nativeTheme.on('updated', function theThemeHasChanged () {
 let microbreakIdeas
 let breakIdeas
 let breakPlanner
+let breakStats
+let scheduledBreaks
+const awayTracker = new AwayTracker(() => powerMonitor.getSystemIdleTime())
+
+// A long break only counts as completed if you actually stepped away.
+function recordLongBreakEnd () {
+  const away = awayTracker.wasAway(settings.get('breakDuration'))
+  breakStats.record('long', away ? 'completed' : 'skipped')
+}
 let appIcon = null
 let autostartManager = null
 let displayManager = null
@@ -357,7 +369,8 @@ async function initialize (isAppStart = true) {
     })
   }
   if (!breakPlanner) {
-    breakPlanner = new BreaksPlanner(settings)
+    breakStats = new BreakStats(join(app.getPath('userData'), 'break-stats.jsonl'))
+    breakPlanner = new BreaksPlanner(settings, breakStats)
     breakPlanner.nextBreak()
     breakPlanner.on('startMicrobreakNotification', () => { startMicrobreakNotification() })
     breakPlanner.on('startBreakNotification', () => { startBreakNotification() })
@@ -368,6 +381,7 @@ async function initialize (isAppStart = true) {
         return
       }
       decreaseDanger(1)
+      if (shouldPlanNext) breakStats.record('mini', 'completed')
       finishMicrobreak(shouldPlaySound, shouldPlanNext)
     })
     breakPlanner.on('startBreak', () => { startBreak() })
@@ -377,8 +391,16 @@ async function initialize (isAppStart = true) {
         return
       }
       decreaseDanger(2)
+      if (shouldPlanNext) recordLongBreakEnd()
       finishBreak(shouldPlaySound, shouldPlanNext)
     })
+    scheduledBreaks = new ScheduledBreaks(settings, join(app.getPath('userData'), 'scheduled-breaks.json'))
+    scheduledBreaks.on('scheduledBreak', (time) => {
+      if (breakPlanner.isPaused || microbreakWins || breakWins) return
+      log.info(`Stretchly: scheduled Long break at ${time}`)
+      skipToBreak()
+    })
+    scheduledBreaks.start()
     breakPlanner.on('resumeBreaks', () => { resumeBreaks() })
     breakPlanner.on('updateToolTip', function () {
       updateTray()
@@ -762,6 +784,7 @@ function startMicrobreak () {
     log.warn('Stretchly: Mini break already running, not starting Mini break')
     return
   }
+  breakStats.record('mini', 'started')
 
   const breakDuration = settings.get('microbreakDuration')
   const strictMode = settings.get('microbreakStrictMode')
@@ -930,6 +953,8 @@ function startBreak () {
     log.warn('Stretchly: Long break already running, not starting Long break')
     return
   }
+  breakStats.record('long', 'started')
+  awayTracker.start()
 
   const breakDuration = settings.get('breakDuration')
   const strictMode = settings.get('breakStrictMode')
@@ -1160,6 +1185,7 @@ function finishMicrobreak (shouldPlaySound = true, shouldPlanNext = true) {
 }
 
 function finishBreak (shouldPlaySound = true, shouldPlanNext = true) {
+  awayTracker.stop()
   breakWins = breakComplete(shouldPlaySound, breakWins, 'long')
   log.info(`Stretchly: finishing Long break (shouldPlanNext: ${shouldPlanNext})`)
   if (shouldPlanNext) {
@@ -1171,6 +1197,7 @@ function finishBreak (shouldPlaySound = true, shouldPlanNext = true) {
 }
 
 function postponeMicrobreak () {
+  breakStats.record('mini', 'postponed')
   increaseDanger(1)
   microbreakWins = breakComplete(false, microbreakWins, 'mini')
   breakPlanner.postponeCurrentBreak()
@@ -1179,6 +1206,7 @@ function postponeMicrobreak () {
 }
 
 function postponeBreak () {
+  breakStats.record('long', 'postponed')
   increaseDanger(1)
   breakWins = breakComplete(false, breakWins, 'long')
   breakPlanner.postponeCurrentBreak()
@@ -1275,10 +1303,12 @@ function loadIdeas () {
 
 function pauseBreaks (milliseconds) {
   if (microbreakWins) {
+    breakStats.record('mini', 'skipped')
     increaseDanger(1)
     finishMicrobreak(false)
   }
   if (breakWins) {
+    breakStats.record('long', 'skipped')
     increaseDanger(2)
     finishBreak(false)
   }
@@ -1572,6 +1602,7 @@ ipcMain.on('postpone-long-break', function (event) {
 
 ipcMain.on('finish-mini-break', function (event, shouldPlaySound, manualAwaiting) {
   log.info(`Stretchly: finish button clicked during Mini break (manualAwaiting: ${manualAwaiting})`)
+  breakStats.record('mini', manualAwaiting ? 'completed' : 'skipped')
   if (manualAwaiting) {
     decreaseDanger(1)
   } else {
@@ -1582,6 +1613,8 @@ ipcMain.on('finish-mini-break', function (event, shouldPlaySound, manualAwaiting
 
 ipcMain.on('finish-long-break', function (event, shouldPlaySound, manualAwaiting) {
   log.info(`Stretchly: finish button clicked during Long break (manualAwaiting: ${manualAwaiting})`)
+  if (manualAwaiting) recordLongBreakEnd()
+  else breakStats.record('long', 'skipped')
   if (manualAwaiting) {
     decreaseDanger(2)
   } else {

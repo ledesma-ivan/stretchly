@@ -47,6 +47,8 @@ export default {
   useMonochromeTrayIcon: false,
   trayIconThemeSource: 'system',
   silentNotifications: false,
+  scheduledBreaks: [],
+  scheduledBreaksAnchor: true,
   monitorDnd: true,
   monitorDndCheckInterval: 2000,
   miniBreakStartSound: 'silence',

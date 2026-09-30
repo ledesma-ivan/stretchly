@@ -6,9 +6,10 @@ import AppExclusionsManager from './utils/appExclusionsManager.js'
 import log from 'electron-log/main.js'
 
 class BreaksPlanner extends EventEmitter {
-  constructor (settings) {
+  constructor (settings, stats = null) {
     super()
     this.settings = settings
+    this.stats = stats
     this.breakNumber = 0
     this.postponesNumber = 0
     this.scheduler = null
@@ -115,7 +116,7 @@ class BreaksPlanner extends EventEmitter {
     if (this.scheduler) this.scheduler.cancel()
     const shouldBreak = this.settings.get('break')
     const shouldMicrobreak = this.settings.get('microbreak')
-    const interval = this.settings.get('microbreakInterval')
+    const interval = Math.round(this.settings.get('microbreakInterval') * (this.stats?.adherenceFactor() ?? 1))
     const breakNotification = this.settings.get('breakNotification')
     const breakNotificationInterval = this.settings.get('breakNotificationInterval')
     const microbreakNotification = this.settings.get('microbreakNotification')
